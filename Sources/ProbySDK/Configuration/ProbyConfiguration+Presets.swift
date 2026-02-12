@@ -12,6 +12,7 @@ public extension ProbyConfiguration {
     /// Full-featured development mode. All collectors, no pairing.
     static let development: ProbyConfiguration = {
         var config = ProbyConfiguration()
+        config.enforceDebugOnly = false
         config.filter.minimumLevel = .verbose
         config.enabledCollectors = .all
         config.limits.maxBufferCount = 1_000

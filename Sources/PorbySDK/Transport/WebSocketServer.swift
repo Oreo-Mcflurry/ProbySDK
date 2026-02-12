@@ -12,12 +12,16 @@ public enum ConnectionState: Sendable {
 final class WebSocketServer {
     private var listener: NWListener?
     private var connections: [String: NWConnection] = [:]
+    private var authenticatedConnections: Set<String> = []
     private let queue = DispatchQueue(label: "com.porby.ws", qos: .utility)
     private let port: UInt16
     private let codec = MessageCodec()
 
     var onConnectionChanged: ((ConnectionState) -> Void)?
     var onCommandReceived: ((ViewerCommand) -> Void)?
+    var onViewerAuthenticated: ((String) -> Void)?
+
+    var pairingManager: PairingManager?
 
     private var handshakeProvider: (() -> Handshake)?
 
@@ -73,6 +77,7 @@ final class WebSocketServer {
             connection.cancel()
         }
         connections.removeAll()
+        authenticatedConnections.removeAll()
         onConnectionChanged?(.disconnected)
     }
 
@@ -83,9 +88,28 @@ final class WebSocketServer {
 
         guard let data = codec.encode(message) else { return }
 
-        for (_, connection) in connections {
-            sendData(data, on: connection)
+        // Only send to authenticated connections (or all if pairing not required)
+        for (id, connection) in connections {
+            if pairingManager == nil || authenticatedConnections.contains(id) {
+                sendData(data, on: connection)
+            }
         }
+    }
+
+    /// Send replay entries to a specific connection
+    func sendReplay(_ entries: [PorbyLogEntry], to connectionId: String) {
+        guard let connection = connections[connectionId], !entries.isEmpty else { return }
+        let message = WsMessage.logReplay(entries)
+        guard let data = codec.encode(message) else { return }
+        sendData(data, on: connection)
+    }
+
+    /// Whether any authenticated viewer is connected
+    var hasAuthenticatedViewers: Bool {
+        if pairingManager == nil {
+            return !connections.isEmpty
+        }
+        return !authenticatedConnections.isEmpty
     }
 
     /// Provides access to the underlying NWListener for Bonjour configuration
@@ -105,6 +129,7 @@ final class WebSocketServer {
                 self?.receiveLoop(connection: connection, id: id)
             case .failed, .cancelled:
                 self?.connections.removeValue(forKey: id)
+                self?.authenticatedConnections.remove(id)
                 if self?.connections.isEmpty == true {
                     self?.onConnectionChanged?(.waiting)
                 }
@@ -129,7 +154,7 @@ final class WebSocketServer {
             if let data = content {
                 let decoded: WsMessage? = self.codec.decode(data)
                 if let message = decoded {
-                    self.handleMessage(message)
+                    self.handleMessage(message, from: id)
                 }
             }
 
@@ -137,18 +162,47 @@ final class WebSocketServer {
         }
     }
 
-    private func handleMessage(_ message: WsMessage) {
+    private func handleMessage(_ message: WsMessage, from connectionId: String) {
         switch message {
         case .ping:
             broadcastMessage(.pong)
         case .command(let command):
-            onCommandReceived?(command)
-        case .pairingRequest:
-            // TODO: Phase 2 - pairing flow
-            break
+            // Only accept commands from authenticated connections
+            if pairingManager == nil || authenticatedConnections.contains(connectionId) {
+                onCommandReceived?(command)
+            }
+        case .pairingRequest(let code):
+            handlePairingRequest(code: code, from: connectionId)
         default:
             break
         }
+    }
+
+    private func handlePairingRequest(code: String, from connectionId: String) {
+        guard let pairingManager else {
+            // Pairing not required — auto-accept
+            authenticatedConnections.insert(connectionId)
+            sendPairingResponse(accepted: true, reason: nil, to: connectionId)
+            onViewerAuthenticated?(connectionId)
+            return
+        }
+
+        let result = pairingManager.validate(code: code)
+        switch result {
+        case .accepted:
+            authenticatedConnections.insert(connectionId)
+            sendPairingResponse(accepted: true, reason: nil, to: connectionId)
+            onViewerAuthenticated?(connectionId)
+        case .rejected(let reason):
+            sendPairingResponse(accepted: false, reason: reason, to: connectionId)
+        }
+    }
+
+    private func sendPairingResponse(accepted: Bool, reason: String?, to connectionId: String) {
+        guard let connection = connections[connectionId] else { return }
+        let message = WsMessage.pairingResponse(accepted: accepted, reason: reason)
+        guard let data = codec.encode(message) else { return }
+        sendData(data, on: connection)
     }
 
     private func sendHandshake(to connection: NWConnection) {

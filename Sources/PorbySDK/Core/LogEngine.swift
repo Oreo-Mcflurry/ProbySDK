@@ -7,6 +7,7 @@ final class LogEngine {
     private var buffer: LogBuffer
     private let transport: TransportLayer
     private let queue = DispatchQueue(label: "com.porby.engine", qos: .utility)
+    private var collectors: [LogCollector] = []
 
     private(set) var isRunning = false
     private(set) var configuration: PorbyConfiguration = .default
@@ -51,10 +52,20 @@ final class LogEngine {
         buffer.startFlushing(interval: configuration.limits.flushInterval) { [weak self] entries in
             self?.transport.send(entries)
         }
+
+        // Register enabled auto-collectors
+        let enabled = configuration.enabledCollectors
+        if enabled.contains(.network)     { register(NetworkCollector()) }
+        if enabled.contains(.lifecycle)   { register(LifecycleCollector()) }
+        if enabled.contains(.ui)          { register(UICollector()) }
+        if enabled.contains(.performance) { register(PerformanceCollector(interval: configuration.limits.performanceMonitoringInterval)) }
+        if enabled.contains(.crash)       { register(CrashCollector()) }
     }
 
     func stop() {
         isRunning = false
+        collectors.forEach { $0.stop() }
+        collectors.removeAll()
         buffer.flush()
         transport.stop()
     }
@@ -71,4 +82,26 @@ final class LogEngine {
     }
 
     var isConnected: Bool { transport.isConnected }
+
+    // MARK: - Collector Support
+
+    private func register(_ collector: LogCollector) {
+        collector.onLog = { [weak self] entry in
+            self?.ingest(entry)
+        }
+        collector.start()
+        collectors.append(collector)
+    }
+
+    /// Synchronously drains the buffer and persists all pending logs.
+    /// Called by CrashCollector during fatal signal/exception handling.
+    /// Uses persistence for reliability since viewers may not be connected during a crash.
+    func emergencyFlush() {
+        let batch = buffer.drain()
+        if !batch.isEmpty {
+            transport.emergencyPersist(batch)
+            // Also try sending over transport in case a viewer is connected
+            transport.send(batch)
+        }
+    }
 }

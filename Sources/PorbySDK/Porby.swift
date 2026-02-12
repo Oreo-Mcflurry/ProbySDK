@@ -151,6 +151,36 @@ public enum Porby {
         return result
     }
 
+    // MARK: - External Integration Bridge
+
+    /// Bridge API for external logging systems (SwiftLog, OSLog, etc.) to inject logs
+    public static func forward(
+        level: PorbyLogLevel,
+        category: PorbyCategory = .app,
+        message: String,
+        metadata: PorbyMetadata? = nil,
+        source: String? = nil,
+        file: String = #file,
+        function: String = #function,
+        line: UInt = #line
+    ) {
+        guard LogEngine.shared.shouldLog(level: level, category: category) else { return }
+        var fullMeta = metadata ?? [:]
+        if let source = source {
+            fullMeta["_source"] = .string(source)
+        }
+        let entry = PorbyLogEntry(
+            level: level,
+            category: category,
+            message: message,
+            file: file,
+            function: function,
+            line: line,
+            metadata: fullMeta.isEmpty ? nil : fullMeta
+        )
+        LogEngine.shared.ingest(entry)
+    }
+
     // MARK: - Connection State
 
     public static var isConnected: Bool { LogEngine.shared.isConnected }

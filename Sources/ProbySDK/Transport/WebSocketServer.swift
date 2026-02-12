@@ -54,16 +54,21 @@ final class WebSocketServer {
         listener.stateUpdateHandler = { [weak self] state in
             switch state {
             case .ready:
+                if let port = self?.listener?.port {
+                    print("[ProbySDK] ✅ WebSocket server ready on port \(port)")
+                }
                 self?.onConnectionChanged?(.waiting)
             case .failed(let error):
-                print("[ProbySDK] Listener failed: \(error)")
+                print("[ProbySDK] ❌ Listener failed: \(error)")
                 self?.stop()
             default:
+                print("[ProbySDK] Listener state: \(state)")
                 break
             }
         }
 
         listener.newConnectionHandler = { [weak self] connection in
+            print("[ProbySDK] 📥 New connection from: \(connection.endpoint)")
             self?.handleNewConnection(connection)
         }
 

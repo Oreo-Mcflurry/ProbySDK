@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "PorbySDK",
+    name: "ProbySDK",
     platforms: [
         .iOS(.v16),
         .macOS(.v13),
@@ -10,8 +10,8 @@ let package = Package(
     ],
     products: [
         .library(
-            name: "PorbySDK",
-            targets: ["PorbySDK"]
+            name: "ProbySDK",
+            targets: ["ProbySDK"]
         ),
     ],
     dependencies: [
@@ -20,15 +20,15 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "PorbySDK",
+            name: "ProbySDK",
             dependencies: [
                 .product(name: "DMMessagePack", package: "msgpack-swift"),
                 .product(name: "Logging", package: "swift-log"),
             ]
         ),
         .testTarget(
-            name: "PorbySDKTests",
-            dependencies: ["PorbySDK"]
+            name: "ProbySDKTests",
+            dependencies: ["ProbySDK"]
         ),
     ]
 )

@@ -13,9 +13,15 @@ let package = Package(
             targets: ["PorbySDK"]
         ),
     ],
+    dependencies: [
+        .package(url: "https://github.com/fumoboy007/msgpack-swift.git", from: "2.0.0"),
+    ],
     targets: [
         .target(
-            name: "PorbySDK"
+            name: "PorbySDK",
+            dependencies: [
+                .product(name: "DMMessagePack", package: "msgpack-swift"),
+            ]
         ),
         .testTarget(
             name: "PorbySDKTests",

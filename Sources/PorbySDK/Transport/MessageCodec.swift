@@ -1,18 +1,10 @@
 import Foundation
+import MessagePack
 
-/// JSON-based message codec for WebSocket communication (Phase 1 MVP)
+/// MessagePack-based codec for efficient binary serialization
 final class MessageCodec: @unchecked Sendable {
-    private let encoder: JSONEncoder = {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        return encoder
-    }()
-
-    private let decoder: JSONDecoder = {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return decoder
-    }()
+    private let encoder = MessagePackEncoder()
+    private let decoder = MessagePackDecoder()
 
     func encode<T: Encodable>(_ value: T) -> Data? {
         try? encoder.encode(value)

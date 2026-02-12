@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Singleton engine that ties together buffer + transport + configuration
 final class LogEngine {
@@ -13,6 +16,18 @@ final class LogEngine {
     private(set) var configuration: PorbyConfiguration = .default
 
     var onConnectionChanged: ((ConnectionState) -> Void)?
+
+    // MARK: - Rate Limiting State
+
+    private var logCountThisSecond: Int = 0
+    private var lastSecondTimestamp: Date = Date()
+    private let rateLimitLock = NSLock()
+
+    // MARK: - Memory Pressure State
+
+    private var memoryWarningObserver: Any?
+    private let estimatedEntrySize = 512 // bytes per entry estimate
+    private let memoryHardCapBytes = 5 * 1024 * 1024 // 5MB
 
     private init() {
         self.buffer = LogBuffer()
@@ -60,6 +75,9 @@ final class LogEngine {
         if enabled.contains(.ui)          { register(UICollector()) }
         if enabled.contains(.performance) { register(PerformanceCollector(interval: configuration.limits.performanceMonitoringInterval)) }
         if enabled.contains(.crash)       { register(CrashCollector()) }
+
+        // Observe memory warnings
+        observeMemoryWarnings()
     }
 
     func stop() {
@@ -68,6 +86,7 @@ final class LogEngine {
         collectors.removeAll()
         buffer.flush()
         transport.stop()
+        removeMemoryWarningObserver()
     }
 
     func shouldLog(level: PorbyLogLevel, category: PorbyCategory) -> Bool {
@@ -76,6 +95,12 @@ final class LogEngine {
     }
 
     func ingest(_ entry: PorbyLogEntry) {
+        // Rate limiting: error/fatal are always allowed through
+        let isPriority = entry.level == .error || entry.level == .fatal
+        if !isPriority && isRateLimited() {
+            return
+        }
+
         queue.async { [weak self] in
             self?.buffer.append(entry)
         }
@@ -102,6 +127,80 @@ final class LogEngine {
             transport.emergencyPersist(batch)
             // Also try sending over transport in case a viewer is connected
             transport.send(batch)
+        }
+    }
+
+    // MARK: - Rate Limiting
+
+    /// Returns true if the current log should be dropped due to rate limiting.
+    private func isRateLimited() -> Bool {
+        let maxPerSecond = configuration.limits.maxLogsPerSecond
+        guard maxPerSecond > 0 else { return false } // 0 = unlimited
+
+        rateLimitLock.lock(); defer { rateLimitLock.unlock() }
+
+        let now = Date()
+        let elapsed = now.timeIntervalSince(lastSecondTimestamp)
+
+        if elapsed >= 1.0 {
+            // Reset counter for new second window
+            lastSecondTimestamp = now
+            logCountThisSecond = 1
+            return false
+        }
+
+        logCountThisSecond += 1
+        return logCountThisSecond > maxPerSecond
+    }
+
+    // MARK: - Memory Warning Response
+
+    private func observeMemoryWarnings() {
+        #if canImport(UIKit) && !os(watchOS)
+        memoryWarningObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            self?.handleMemoryWarning()
+        }
+        #endif
+    }
+
+    private func removeMemoryWarningObserver() {
+        if let observer = memoryWarningObserver {
+            NotificationCenter.default.removeObserver(observer)
+            memoryWarningObserver = nil
+        }
+    }
+
+    private func handleMemoryWarning() {
+        // Immediately flush the buffer
+        let batch = buffer.drain()
+        if !batch.isEmpty {
+            transport.send(batch)
+        }
+
+        // Reduce max buffer count by 50%
+        let currentMax = buffer.maxSize
+        let reducedMax = max(currentMax / 2, 50) // don't go below 50
+        buffer.reduceMaxSize(to: reducedMax)
+
+        print("[PorbySDK] Memory warning: flushed buffer, reduced maxSize to \(reducedMax)")
+    }
+
+    /// Check estimated memory and aggressively flush if over hard cap.
+    /// Called periodically or on demand.
+    func checkMemoryPressure() {
+        let estimatedUsage = buffer.maxSize * estimatedEntrySize
+        if estimatedUsage > memoryHardCapBytes {
+            let batch = buffer.drain()
+            if !batch.isEmpty {
+                transport.send(batch)
+            }
+            let targetMax = memoryHardCapBytes / estimatedEntrySize
+            buffer.reduceMaxSize(to: max(targetMax, 50))
+            print("[PorbySDK] Memory hard cap exceeded: aggressively reduced buffer to \(targetMax)")
         }
     }
 }

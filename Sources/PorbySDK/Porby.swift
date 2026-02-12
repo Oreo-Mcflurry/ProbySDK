@@ -121,6 +121,36 @@ public enum Porby {
         PorbyCategoryLogger(category: category)
     }
 
+    // MARK: - Measurement
+
+    @discardableResult
+    public static func measure<T>(
+        _ label: String,
+        category: PorbyCategory = .performance,
+        _ block: () throws -> T
+    ) rethrows -> T {
+        log(category, .info, "\(label) started")
+        let start = CFAbsoluteTimeGetCurrent()
+        let result = try block()
+        let duration = (CFAbsoluteTimeGetCurrent() - start) * 1000
+        log(category, .info, String(format: "%@ completed (%.1fms)", label, duration))
+        return result
+    }
+
+    @discardableResult
+    public static func measure<T>(
+        _ label: String,
+        category: PorbyCategory = .performance,
+        _ block: () async throws -> T
+    ) async rethrows -> T {
+        log(category, .info, "\(label) started")
+        let start = CFAbsoluteTimeGetCurrent()
+        let result = try await block()
+        let duration = (CFAbsoluteTimeGetCurrent() - start) * 1000
+        log(category, .info, String(format: "%@ completed (%.1fms)", label, duration))
+        return result
+    }
+
     // MARK: - Connection State
 
     public static var isConnected: Bool { LogEngine.shared.isConnected }

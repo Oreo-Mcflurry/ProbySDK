@@ -1,4 +1,5 @@
 import Foundation
+import Network
 
 /// Coordinates WebSocketServer, BonjourService, PairingManager, and LogPersistence into a unified transport
 final class TransportLayer {
@@ -7,6 +8,11 @@ final class TransportLayer {
     private var configuration: ProbyConfiguration?
     private var pairingManager: PairingManager?
     private var persistence: LogPersistence?
+
+    private var pathMonitor: NWPathMonitor?
+    private let monitorQueue = DispatchQueue(label: "com.proby.network-monitor")
+    private var lastPathHasWiFi: Bool = false
+    private var isRestarting: Bool = false
 
     var isConnected: Bool {
         if case .connected = currentState {
@@ -45,18 +51,32 @@ final class TransportLayer {
             pairingManager = manager
         }
 
+        try startServer(configuration: configuration)
+        startNetworkMonitor()
+    }
+
+    /// Stops the transport layer
+    func stop() {
+        stopNetworkMonitor()
+        stopServer()
+        pairingManager = nil
+        currentState = .disconnected
+        configuration = nil
+    }
+
+    // MARK: - Server Lifecycle
+
+    private func startServer(configuration: ProbyConfiguration) throws {
         let port = configuration.transport.port
         let server = WebSocketServer(port: port == 0 ? 9394 : port)
         self.server = server
 
-        // Wire up pairing manager
         server.pairingManager = pairingManager
 
         server.onConnectionChanged = { [weak self] state in
             self?.currentState = state
             self?.onConnectionChanged?(state)
 
-            // Configure Bonjour once listener is ready
             if case .waiting = state, let listener = server.nwListener {
                 self?.bonjour.configure(listener: listener, configuration: configuration)
             }
@@ -66,7 +86,6 @@ final class TransportLayer {
             self?.onCommandReceived?(command)
         }
 
-        // On viewer authenticated: replay stored logs if enabled
         server.onViewerAuthenticated = { [weak self] connectionId in
             self?.handleViewerAuthenticated(connectionId: connectionId)
         }
@@ -74,18 +93,64 @@ final class TransportLayer {
         try server.start(handshakeProvider: {
             Handshake(pairingRequired: configuration.transport.requiresPairing)
         })
+
+        print("[ProbySDK] Server started")
     }
 
-    /// Stops the transport layer
-    func stop() {
+    private func stopServer() {
         if let server {
             bonjour.stop(listener: server.nwListener)
             server.stop()
         }
         server = nil
-        pairingManager = nil
-        currentState = .disconnected
-        configuration = nil
+    }
+
+    private func restartServer() {
+        guard let configuration, !isRestarting else { return }
+        isRestarting = true
+
+        print("[ProbySDK] Network changed — restarting server...")
+        stopServer()
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self else { return }
+            do {
+                try self.startServer(configuration: configuration)
+            } catch {
+                print("[ProbySDK] Failed to restart server: \(error)")
+            }
+            self.isRestarting = false
+        }
+    }
+
+    // MARK: - Network Monitor
+
+    private func startNetworkMonitor() {
+        let monitor = NWPathMonitor()
+        pathMonitor = monitor
+
+        monitor.pathUpdateHandler = { [weak self] path in
+            guard let self else { return }
+
+            let hasWiFi = path.usesInterfaceType(.wifi)
+            let wasWiFi = self.lastPathHasWiFi
+            self.lastPathHasWiFi = hasWiFi
+
+            if hasWiFi && !wasWiFi {
+                // Cellular → WiFi: restart to bind on new interface
+                print("[ProbySDK] WiFi connected — restarting transport")
+                self.restartServer()
+            } else if !hasWiFi && wasWiFi {
+                print("[ProbySDK] WiFi lost — logs will be persisted offline")
+            }
+        }
+
+        monitor.start(queue: monitorQueue)
+    }
+
+    private func stopNetworkMonitor() {
+        pathMonitor?.cancel()
+        pathMonitor = nil
     }
 
     /// Sends log entries to all connected viewers, or persists offline if no viewers

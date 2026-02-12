@@ -1,10 +1,17 @@
 import Foundation
-import MessagePack
 
-/// MessagePack-based codec for efficient binary serialization
 final class MessageCodec: @unchecked Sendable {
-    private let encoder = MessagePackEncoder()
-    private let decoder = MessagePackDecoder()
+    private let encoder: JSONEncoder = {
+        let e = JSONEncoder()
+        e.dateEncodingStrategy = .iso8601
+        return e
+    }()
+
+    private let decoder: JSONDecoder = {
+        let d = JSONDecoder()
+        d.dateDecodingStrategy = .iso8601
+        return d
+    }()
 
     func encode<T: Encodable>(_ value: T) -> Data? {
         try? encoder.encode(value)

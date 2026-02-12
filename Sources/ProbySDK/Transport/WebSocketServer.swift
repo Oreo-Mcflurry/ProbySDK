@@ -225,7 +225,7 @@ final class WebSocketServer {
     }
 
     private func sendData(_ data: Data, on connection: NWConnection) {
-        let metadata = NWProtocolWebSocket.Metadata(opcode: .binary)
+        let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
         let context = NWConnection.ContentContext(
             identifier: "wsMessage",
             metadata: [metadata]
